@@ -92,6 +92,8 @@
   table{width:100%;border-collapse:collapse;font-size:.85rem;}
   th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);}
   th{color:var(--text-dim);font-weight:600;text-transform:uppercase;font-size:.72rem;letter-spacing:.05em;}
+  tr.clickrow{cursor:pointer;}
+  tr.clickrow:hover{background:rgba(201,162,39,0.08);}
   .empty{text-align:center;color:var(--text-dim);padding:40px 20px;}
   .badgewrap{display:flex;gap:20px;align-items:center;flex-wrap:wrap;}
   .idcard{flex:none;width:220px;background:linear-gradient(160deg,#123028,#0c211c);border:1.5px solid var(--brass);border-radius:14px;padding:18px;position:relative;box-shadow:0 6px 18px rgba(0,0,0,.35);}
@@ -209,7 +211,7 @@
     </div>
 
     <div id="tabAdd" class="panel">
-      <h2>Nuevo caso</h2>
+      <h2 id="addFormHeading">Nuevo caso</h2>
       <p class="hint">Pega o escribe el enunciado del caso, indica la respuesta correcta y guárdalo. Se guarda en la nube y lo verá todo el alumnado al instante, con un único intento. La categoría determina qué habilidad del alumnado sube, y la dificultad, cuánta experiencia otorga.</p>
       <label for="probText">Enunciado del caso</label>
       <textarea id="probText" placeholder="El hotel «Costa Azul» tiene 84 habitaciones. Hoy están ocupadas 63. Calcula el porcentaje de ocupación del hotel."></textarea>
@@ -231,7 +233,10 @@
           </select>
         </div>
       </div>
-      <div class="row"><button class="btn primary" onclick="addExercise()">Guardar caso</button></div>
+      <div class="row">
+        <button class="btn primary" id="addExerciseBtn" onclick="addExercise()">Guardar caso</button>
+        <button class="btn ghost" id="cancelEditBtn" onclick="cancelEditExercise()" style="display:none;">Cancelar edición</button>
+      </div>
       <div class="okmsg" id="addMsg"></div>
     </div>
 
@@ -268,6 +273,37 @@
       <button class="btn ghost" onclick="openTeacherMenu()">← Volver al menú</button>
       <button class="btn ghost" onclick="goLanding()">Cerrar sesión</button>
     </div>
+  </section>
+
+  <section id="viewTeacherStudentDetail" class="view">
+    <div class="panel">
+      <h2>Perfil de <span id="sdName">—</span></h2>
+      <p class="hint">Usuario de acceso interno: <code id="sdEmail">—</code>. Te sirve para localizar su cuenta en Firebase → Authentication si alguna vez necesitas eliminarla también allí.</p>
+      <label for="sdNameInput">Nombre y apellidos</label>
+      <input type="text" id="sdNameInput">
+      <label for="sdGroupInput">Grupo / curso</label>
+      <input type="text" id="sdGroupInput">
+      <div class="row"><button class="btn primary" onclick="saveStudentDetail()">💾 Guardar cambios</button></div>
+      <div class="okmsg" id="sdMsg"></div>
+    </div>
+    <div class="panel">
+      <h3>Estadísticas generales</h3>
+      <div class="stats" id="sdStats"></div>
+    </div>
+    <div class="panel">
+      <h3>Visión general de habilidades</h3>
+      <div id="sdRadar"></div>
+    </div>
+    <div class="panel">
+      <h3>Habilidades por categoría</h3>
+      <div id="sdSkills"></div>
+    </div>
+    <div class="panel">
+      <h3>Zona de riesgo</h3>
+      <p class="hint">Al eliminar el perfil se borra su progreso y desaparece de esta lista; si vuelve a intentar entrar con su usuario, la app le dirá que no existe su perfil. Su cuenta de acceso (usuario/contraseña) seguirá técnicamente registrada en Firebase Authentication hasta que la borres también allí manualmente — así puede, si hace falta, volver a registrarse con otro nombre de usuario, o liberar del todo el actual borrando ambas cosas.</p>
+      <div class="row"><button class="btn danger" onclick="deleteStudentProfile()">🗑️ Eliminar perfil del alumno/a</button></div>
+    </div>
+    <div class="row"><button class="btn ghost" onclick="openTeacherProgress()">← Volver al progreso</button></div>
   </section>
 
   <section id="viewStudentAuth" class="view">
@@ -619,14 +655,73 @@ function openTeacherMenu(){
 function openTeacherPanel(){
   attachExercisesListener();
   updateTopbar();
+  editingExerciseId = null;
   setTeacherTab('add');
+  updateAddFormMode();
   showView('viewTeacherPanel');
 }
+let currentDetailStudentId = null;
 function openTeacherProgress(){
   attachStudentsListener();
   renderStudentProgress();
   updateTopbar();
   showView('viewTeacherProgress');
+}
+function openTeacherStudentDetail(id){
+  const s = studentsCache.find(x=>x.id===id);
+  if(!s) return;
+  currentDetailStudentId = id;
+  document.getElementById('sdName').textContent = s.name;
+  document.getElementById('sdEmail').textContent = s.username ? (slugUsername(s.username) + STUDENT_EMAIL_DOMAIN) : 'no disponible (perfil creado antes de esta actualización)';
+  document.getElementById('sdNameInput').value = s.name || '';
+  document.getElementById('sdGroupInput').value = s.group || '';
+  const acc = s.attempts ? Math.round(100*s.correct/s.attempts)+'%' : '—';
+  document.getElementById('sdStats').innerHTML = `
+    <div class="stat"><div class="n">${s.correct||0}</div><div class="l">Aciertos</div></div>
+    <div class="stat"><div class="n">${(s.attempts||0)-(s.correct||0)}</div><div class="l">Fallos</div></div>
+    <div class="stat"><div class="n">${s.attempts||0}</div><div class="l">Casos vistos</div></div>
+    <div class="stat"><div class="n">${acc}</div><div class="l">Precisión</div></div>`;
+  const skills = ensureSkillsShape(s);
+  document.getElementById('sdRadar').innerHTML = buildRadarChart(skills);
+  document.getElementById('sdSkills').innerHTML = SKILLS.map(sk=>{
+    const xp = skills[sk]||0;
+    const info = skillLevelInfo(xp);
+    const segs=10; const lit=Math.round((info.into/info.needed)*segs);
+    let ledgerHTML='';
+    for(let i=0;i<segs;i++) ledgerHTML += `<div class="seg${i<lit?' lit':''}"></div>`;
+    return `
+      <div class="excard" style="margin-bottom:10px;">
+        <div class="top"><div class="txt" style="font-family:var(--font-display);font-size:1.05rem;">${escapeHTML(sk)}</div>
+        <span class="tag">Nivel ${info.level}</span></div>
+        <div class="ledger" style="margin-top:10px;">${ledgerHTML}</div>
+        <div class="ledger-label"><span>${info.into} XP</span><span>/ ${info.needed} XP para el siguiente nivel</span></div>
+      </div>`;
+  }).join('');
+  document.getElementById('sdMsg').textContent = '';
+  updateTopbar();
+  showView('viewTeacherStudentDetail');
+}
+async function saveStudentDetail(){
+  if(!currentDetailStudentId) return;
+  const name = document.getElementById('sdNameInput').value.trim();
+  const group = document.getElementById('sdGroupInput').value.trim();
+  const msg = document.getElementById('sdMsg');
+  if(!name){ msg.style.color='var(--error)'; msg.textContent='El nombre no puede quedar vacío.'; return; }
+  try{
+    await updateDoc(doc(db,'students',currentDetailStudentId), {name, group});
+    document.getElementById('sdName').textContent = name;
+    msg.style.color='var(--success)'; msg.textContent='Cambios guardados.';
+    setTimeout(()=>{msg.textContent='';}, 2500);
+  }catch(e){ msg.style.color='var(--error)'; msg.textContent='No se pudo guardar: '+e.message; }
+}
+async function deleteStudentProfile(){
+  if(!currentDetailStudentId) return;
+  if(!confirm('¿Eliminar el perfil de este alumno/a? Se borrará todo su progreso de la aplicación. Esta acción no se puede deshacer.')) return;
+  try{
+    await deleteDoc(doc(db,'students',currentDetailStudentId));
+    currentDetailStudentId = null;
+    openTeacherProgress();
+  }catch(e){ alert('No se pudo eliminar: '+e.message); }
 }
 function openTeacherSkills(){
   attachSkillsConfigListener();
@@ -658,6 +753,7 @@ function setTeacherTab(tab){
   });
   if(tab==='list') renderExList();
 }
+let editingExerciseId = null;
 async function addExercise(){
   const text = document.getElementById('probText').value.trim();
   const answer = document.getElementById('probAnswer').value.trim();
@@ -666,11 +762,49 @@ async function addExercise(){
   const msg = document.getElementById('addMsg');
   if(!text || !answer){ msg.style.color='var(--error)'; msg.textContent='Escribe el enunciado y la respuesta antes de guardar.'; return; }
   try{
-    await addDoc(collection(db,'exercises'), {text, answer, difficulty, category, createdAt: Date.now()});
-    document.getElementById('probText').value=''; document.getElementById('probAnswer').value='';
-    msg.style.color='var(--success)'; msg.textContent='Caso guardado correctamente.';
+    if(editingExerciseId){
+      await updateDoc(doc(db,'exercises',editingExerciseId), {text, answer, difficulty, category});
+      msg.style.color='var(--success)'; msg.textContent='Caso actualizado correctamente.';
+      cancelEditExercise();
+    } else {
+      await addDoc(collection(db,'exercises'), {text, answer, difficulty, category, createdAt: Date.now()});
+      document.getElementById('probText').value=''; document.getElementById('probAnswer').value='';
+      msg.style.color='var(--success)'; msg.textContent='Caso guardado correctamente.';
+    }
     setTimeout(()=>{msg.textContent='';}, 2500);
   }catch(e){ msg.style.color='var(--error)'; msg.textContent='No se pudo guardar: '+e.message; }
+}
+function editExercise(id){
+  const ex = exercisesCache.find(e=>e.id===id);
+  if(!ex) return;
+  editingExerciseId = id;
+  document.getElementById('probText').value = ex.text;
+  document.getElementById('probAnswer').value = ex.answer;
+  document.getElementById('probDifficulty').value = ex.difficulty;
+  document.getElementById('probCategory').value = ex.category;
+  setTeacherTab('add');
+  updateAddFormMode();
+  document.getElementById('probText').scrollIntoView({behavior:'smooth', block:'start'});
+}
+function cancelEditExercise(){
+  editingExerciseId = null;
+  document.getElementById('probText').value=''; document.getElementById('probAnswer').value='';
+  document.getElementById('probDifficulty').value='1'; document.getElementById('probCategory').selectedIndex=0;
+  updateAddFormMode();
+}
+function updateAddFormMode(){
+  const heading = document.getElementById('addFormHeading');
+  const btn = document.getElementById('addExerciseBtn');
+  const cancelBtn = document.getElementById('cancelEditBtn');
+  if(editingExerciseId){
+    heading.textContent = 'Editar caso';
+    btn.textContent = 'Guardar cambios';
+    cancelBtn.style.display = 'inline-block';
+  } else {
+    heading.textContent = 'Nuevo caso';
+    btn.textContent = 'Guardar caso';
+    cancelBtn.style.display = 'none';
+  }
 }
 function renderExList(){
   document.getElementById('exCount').textContent = exercisesCache.length;
@@ -680,11 +814,19 @@ function renderExList(){
   list.innerHTML = exercisesCache.map(ex=>`
     <div class="excard">
       <div class="top"><div class="txt">${escapeHTML(ex.text)}</div>
-        <button class="del" onclick="deleteExercise('${ex.id}')" title="Eliminar">✕</button></div>
+        <div style="display:flex;gap:6px;flex:none;">
+          <button class="del" onclick="editExercise('${ex.id}')" title="Editar">✏️</button>
+          <button class="del" onclick="deleteExercise('${ex.id}')" title="Eliminar">✕</button>
+        </div></div>
       <div class="meta"><span class="tag">${escapeHTML(ex.category)}</span><span class="tag">${diffLabel[ex.difficulty]||'Básico'}</span><span class="tag ans">Respuesta: ${escapeHTML(ex.answer)}</span></div>
     </div>`).join('');
 }
-async function deleteExercise(id){ try{ await deleteDoc(doc(db,'exercises',id)); }catch(e){ alert('No se pudo borrar: '+e.message); } }
+async function deleteExercise(id){
+  try{
+    await deleteDoc(doc(db,'exercises',id));
+    if(editingExerciseId===id) cancelEditExercise();
+  }catch(e){ alert('No se pudo borrar: '+e.message); }
+}
 function renderStudentProgress(){
   const area = document.getElementById('progArea');
   if(studentsCache.length===0){ area.innerHTML = '<div class="empty">Todavía no hay alumnado registrado.</div>'; return; }
@@ -692,9 +834,9 @@ function renderStudentProgress(){
     const acc = s.attempts ? Math.round(100*s.correct/s.attempts)+'%' : '—';
     const skills = ensureSkillsShape(s);
     const skillsHTML = SKILLS.map(sk=>`<span class="tag">${escapeHTML(sk)} Nv${skillLevelInfo(skills[sk]).level}</span>`).join(' ');
-    return `<tr><td>${escapeHTML(s.name)}</td><td>${escapeHTML(s.group||'—')}</td><td>${s.correct||0}/${s.attempts||0}</td><td>${acc}</td><td>${skillsHTML}</td></tr>`;
+    return `<tr class="clickrow" onclick="openTeacherStudentDetail('${s.id}')"><td>${escapeHTML(s.name)}</td><td>${escapeHTML(s.group||'—')}</td><td>${s.correct||0}/${s.attempts||0}</td><td>${acc}</td><td>${skillsHTML}</td></tr>`;
   }).join('');
-  area.innerHTML = `<table><thead><tr><th>Nombre</th><th>Grupo</th><th>Aciertos</th><th>Precisión</th><th>Habilidades</th></tr></thead><tbody>${rows}</tbody></table>`;
+  area.innerHTML = `<table><thead><tr><th>Nombre</th><th>Grupo</th><th>Aciertos</th><th>Precisión</th><th>Habilidades</th></tr></thead><tbody>${rows}</tbody></table><p class="hint" style="margin-top:12px;">Pulsa sobre un alumno o alumna para ver su perfil completo.</p>`;
 }
 function exportBackup(){
   const blob = new Blob([JSON.stringify(exercisesCache.map(({id,...rest})=>rest), null, 2)], {type:'application/json'});
@@ -803,7 +945,7 @@ async function studentRegisterSubmit(evt){
   try{
     const email = slugUsername(username) + STUDENT_EMAIL_DOMAIN;
     const cred = await createUserWithEmailAndPassword(auth, email, pass);
-    const studentData = {name, group, correct:0, attempts:0, streak:0, solved:[], skills: ensureSkillsShape(null)};
+    const studentData = {name, group, username, correct:0, attempts:0, streak:0, solved:[], skills: ensureSkillsShape(null)};
     await setDoc(doc(db,'students',cred.user.uid), studentData);
     currentStudentDoc = {id:cred.user.uid, ...studentData};
     currentRole = 'student';
@@ -1037,9 +1179,11 @@ function closeModal(){ document.getElementById('modalBack').classList.remove('sh
 Object.assign(window, {
   openStudentAuth, openTeacherAuth, goLanding, teacherLoginSubmit, teacherSignupSubmit,
   openTeacherPanelIfAdmin, teacherForgotPassword, setTeacherTab, addExercise, deleteExercise,
+  editExercise, cancelEditExercise,
   showStudentRegisterForm, showStudentLoginForm,
   openStudentProfile, closeStudentProfile, startPractice, backToSetup,
   openTeacherMenu, openTeacherPanel, openTeacherProgress, openTeacherSkills, toggleSkillEnabled,
+  openTeacherStudentDetail, saveStudentDetail, deleteStudentProfile,
   exportBackup, importBackup, resetAllExercises, studentLoginSubmit, studentRegisterSubmit,
   submitAnswer, closeModal
 });
